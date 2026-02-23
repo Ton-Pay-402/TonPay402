@@ -1,0 +1,22 @@
+{
+  "name": "mcp-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start:mcp": "npx tsx index.ts",
+    "start:bot": "npx tsx bot.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@ton/crypto": "^3.3.0",
+    "@orbs-network/ton-access": "^2.3.3",
+    "@ton/ton": "^16.2.2",
+    "dotenv": "^17.3.1",
+    "grammy": "^1.38.3"
+  }
+}
