@@ -175,6 +175,9 @@ Fill `.env` values:
 - `CONTRACT_ADDRESS`
 - `AGENT_MNEMONIC`
 - `AGENT_WALLET_WORKCHAIN`
+- `X402_FACILITATOR_URL` (optional; when set, MCP calls facilitator before on-chain submit)
+- `X402_FACILITATOR_API_KEY` (optional bearer token for facilitator)
+- `X402_FACILITATOR_TIMEOUT_MS` (optional, default `15000`)
 - `OWNER_MNEMONIC`
 - `OWNER_WALLET_WORKCHAIN`
 - `TELEGRAM_BOT_TOKEN`
@@ -207,8 +210,9 @@ npm run start:bot
   - Output: remaining allowance in TON
 
 - `execute_m2m_payment`
-  - Input: `contractAddress`, `targetAddress`, `amountInTon`, optional `requestId`
+  - Input: `contractAddress`, `targetAddress`, `amountInTon`, optional `requestId`, optional `facilitatorContext`
   - Sends `ExecutePayment` from agent wallet
+  - If `X402_FACILITATOR_URL` is configured, MCP first calls AEON/x402 facilitator and can apply returned target/amount/reference before submitting on-chain
   - Over-limit requests are escalated by contract and picked up by Telegram bot
 
 ## Security Notes

@@ -5,6 +5,7 @@ import { Address, TonClient, WalletContractV5R1, toNano, fromNano } from "@ton/t
 import { getHttpEndpoint } from "@orbs-network/ton-access";
 import { mnemonicToWalletKey } from "@ton/crypto";
 import { TonPay402 } from "../build/TonPay402/TonPay402_TonPay402";
+import { requestFacilitatorDecision } from "./facilitator";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
@@ -15,6 +16,9 @@ const TON_NETWORK = process.env.TON_NETWORK ?? "testnet";
 const AGENT_WALLET_WORKCHAIN = Number(process.env.AGENT_WALLET_WORKCHAIN ?? "0");
 const EXECUTION_BUFFER_TON = process.env.EXECUTION_BUFFER_TON ?? "0.1";
 const REQUEST_AUDIT_FILE = path.resolve(process.cwd(), process.env.REQUEST_AUDIT_FILE ?? "request-audit.json");
+const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL?.trim() ?? "";
+const X402_FACILITATOR_API_KEY = process.env.X402_FACILITATOR_API_KEY?.trim() ?? "";
+const X402_FACILITATOR_TIMEOUT_MS = Number(process.env.X402_FACILITATOR_TIMEOUT_MS ?? "15000");
 
 type RequestAuditStatus = "submitted" | "approval_pending" | "approved" | "rejected" | "failed";
 
@@ -27,6 +31,8 @@ type RequestAuditRecord = {
     createdAt: string;
     status: RequestAuditStatus;
     approvalExpected: boolean;
+    facilitatorUrl?: string;
+    facilitatorReference?: string;
     consumedByApprovalId?: string;
     statusUpdatedAt?: string;
 };
@@ -43,6 +49,7 @@ function readAuditRecords(): RequestAuditRecord[] {
 
     return JSON.parse(raw) as RequestAuditRecord[];
 }
+
 
 function saveAuditRecords(records: RequestAuditRecord[]) {
     fs.writeFileSync(REQUEST_AUDIT_FILE, JSON.stringify(records, null, 2), "utf8");
@@ -119,7 +126,11 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
                     contractAddress: { type: "string" },
                     targetAddress: { type: "string" },
                     amountInTon: { type: "string", description: "Amount to pay in TON (e.g. '0.5')" },
-                    requestId: { type: "string", description: "Optional external correlation ID for audit logs" }
+                    requestId: { type: "string", description: "Optional external correlation ID for audit logs" },
+                    facilitatorContext: {
+                        type: "object",
+                        description: "Optional metadata forwarded to AEON/x402 facilitator (resource, method, pricing, etc.)"
+                    }
                 },
                 required: ["contractAddress", "targetAddress", "amountInTon"]
             }
@@ -151,12 +162,29 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const contractAddress = request.params.arguments?.contractAddress as string;
             const targetAddress = request.params.arguments?.targetAddress as string;
             const amountInTon = request.params.arguments?.amountInTon as string;
+            const facilitatorContext = request.params.arguments?.facilitatorContext;
             const requestId = (request.params.arguments?.requestId as string | undefined)?.trim() ||
                 `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
+            const facilitatorDecision = await requestFacilitatorDecision({
+                requestId,
+                contractAddress,
+                targetAddress,
+                amountInTon,
+                facilitatorContext,
+            }, {
+                url: X402_FACILITATOR_URL,
+                apiKey: X402_FACILITATOR_API_KEY,
+                timeoutMs: X402_FACILITATOR_TIMEOUT_MS,
+                network: TON_NETWORK,
+            });
+
+            const effectiveTargetAddress = facilitatorDecision?.targetAddress ?? targetAddress;
+            const effectiveAmountInTon = facilitatorDecision?.amountInTon ?? amountInTon;
+
             const contractAddr = Address.parse(contractAddress);
-            const targetAddr = Address.parse(targetAddress);
-            const amountNano = toNano(amountInTon);
+            const targetAddr = Address.parse(effectiveTargetAddress);
+            const amountNano = toNano(effectiveAmountInTon);
             const bufferNano = toNano(EXECUTION_BUFFER_TON);
             const txValue = amountNano + bufferNano;
 
@@ -182,18 +210,24 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 requestId,
                 contractAddress: contractAddr.toString(),
                 targetAddress: targetAddr.toString(),
-                amountInTon,
+                amountInTon: effectiveAmountInTon,
                 amountNano: amountNano.toString(),
                 createdAt: new Date().toISOString(),
                 status: amountNano > remaining ? "approval_pending" : "submitted",
                 approvalExpected: amountNano > remaining,
+                facilitatorUrl: X402_FACILITATOR_URL || undefined,
+                facilitatorReference: facilitatorDecision?.reference,
             });
+
+            const facilitatorHint = X402_FACILITATOR_URL
+                ? ` Facilitator${facilitatorDecision?.reference ? ` ref=${facilitatorDecision.reference}` : ""}${facilitatorDecision?.note ? ` (${facilitatorDecision.note})` : ""}.`
+                : "";
             
             return {
                 content: [
                     {
                         type: "text",
-                        text: `Submitted ExecutePayment [requestId=${requestId}] from agent wallet ${agentWallet.toString()} for ${amountInTon} TON to ${targetAddr.toString()} on contract ${contractAddr.toString()}.${approvalHint}`
+                        text: `Submitted ExecutePayment [requestId=${requestId}] from agent wallet ${agentWallet.toString()} for ${effectiveAmountInTon} TON to ${targetAddr.toString()} on contract ${contractAddr.toString()}.${approvalHint}${facilitatorHint}`
                     }
                 ]
             };
