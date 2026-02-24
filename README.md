@@ -169,6 +169,7 @@ cp .env.example .env
 Fill `.env` values:
 
 - `TON_NETWORK` (`testnet` or `mainnet`)
+- `ENABLE_MAINNET_MODE` (set `true` to allow mainnet runtime)
 - `TON_API_KEY` (optional)
 - `EXECUTION_BUFFER_TON`
 - `CONTRACT_ADDRESS`
@@ -177,6 +178,10 @@ Fill `.env` values:
 - `X402_FACILITATOR_URL` (optional; when set, MCP calls facilitator before on-chain submit)
 - `X402_FACILITATOR_API_KEY` (optional bearer token for facilitator)
 - `X402_FACILITATOR_TIMEOUT_MS` (optional, default `15000`)
+- `X402_FACILITATOR_RETRY_ATTEMPTS` (optional, default `0`)
+- `X402_FACILITATOR_RETRY_BACKOFF_MS` (optional, default `300`)
+- `X402_FACILITATOR_FAIL_OPEN` (optional, default `false`; if `true`, payment can continue when facilitator call fails)
+- `BROKER_STATE_FILE` (persistent broker envelope state, default `broker-state.json`)
 - `OWNER_MNEMONIC`
 - `OWNER_WALLET_WORKCHAIN`
 - `TELEGRAM_BOT_TOKEN`
@@ -214,6 +219,23 @@ npm run start:bot
   - If `X402_FACILITATOR_URL` is configured, MCP first calls AEON/x402 facilitator and can apply returned target/amount/reference before submitting on-chain
   - Over-limit requests are escalated by contract and picked up by Telegram bot
 
+- `create_envelope`
+  - Input: `envelopeId`, `totalBudgetTon`, `periodSeconds`
+  - Creates shared off-chain budget envelope for multiple agents
+
+- `assign_agent_to_envelope`
+  - Input: `envelopeId`, `agentId`
+  - Grants an agent identity permission to spend from that envelope
+
+- `get_envelope_allowance`
+  - Input: `envelopeId`
+  - Output: remaining envelope budget in TON
+
+- `execute_envelope_payment`
+  - Input: `envelopeId`, `agentId`, `contractAddress`, `targetAddress`, `amountInTon`, optional `requestId`, optional `facilitatorContext`
+  - Reserves envelope budget first, then executes normal on-chain payment path
+  - Rolls back envelope reservation automatically if on-chain submit fails
+
 ## Security Notes
 
 - Use separate mnemonics for owner and agent wallets.
@@ -234,8 +256,8 @@ npm run start:bot
 - [x] MCP Server for LLM tool-calling.
 - [x] Wallet V5R1 runtime signer support (MCP agent + Telegram owner).
 - [x] Integration with AEON/x402 facilitators .
-- [ ] Multi-agent "Broker" for shared budget envelopes .
-- [ ] Mainnet rollout hardening for Wallet V5 architecture.
+- [x] Multi-agent "Broker" for shared budget envelopes .
+- [x] Mainnet rollout hardening for Wallet V5 architecture.
 
 ## License
 

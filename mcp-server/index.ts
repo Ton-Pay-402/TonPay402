@@ -6,6 +6,15 @@ import { getHttpEndpoint } from "@orbs-network/ton-access";
 import { mnemonicToWalletKey } from "@ton/crypto";
 import { TonPay402 } from "../build/TonPay402/TonPay402_TonPay402";
 import { requestFacilitatorDecision } from "./facilitator";
+import {
+    assignAgentToEnvelope,
+    BrokerState,
+    createEnvelope,
+    emptyBrokerState,
+    getEnvelopeAllowance,
+    reserveEnvelopeBudget,
+    rollbackEnvelopeReservation,
+} from "./broker";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
@@ -19,6 +28,11 @@ const REQUEST_AUDIT_FILE = path.resolve(process.cwd(), process.env.REQUEST_AUDIT
 const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL?.trim() ?? "";
 const X402_FACILITATOR_API_KEY = process.env.X402_FACILITATOR_API_KEY?.trim() ?? "";
 const X402_FACILITATOR_TIMEOUT_MS = Number(process.env.X402_FACILITATOR_TIMEOUT_MS ?? "15000");
+const X402_FACILITATOR_RETRY_ATTEMPTS = Number(process.env.X402_FACILITATOR_RETRY_ATTEMPTS ?? "0");
+const X402_FACILITATOR_RETRY_BACKOFF_MS = Number(process.env.X402_FACILITATOR_RETRY_BACKOFF_MS ?? "300");
+const FACILITATOR_FAIL_OPEN = (process.env.X402_FACILITATOR_FAIL_OPEN ?? "false").toLowerCase() === "true";
+const ENABLE_MAINNET_MODE = (process.env.ENABLE_MAINNET_MODE ?? "false").toLowerCase() === "true";
+const BROKER_STATE_FILE = path.resolve(process.cwd(), process.env.BROKER_STATE_FILE ?? "broker-state.json");
 
 type RequestAuditStatus = "submitted" | "approval_pending" | "approved" | "rejected" | "failed";
 
@@ -37,6 +51,17 @@ type RequestAuditRecord = {
     statusUpdatedAt?: string;
 };
 
+type PaymentPreparation = {
+    requestId: string;
+    contractAddr: Address;
+    targetAddr: Address;
+    amountNano: bigint;
+    amountInTon: string;
+    facilitatorDecision: Awaited<ReturnType<typeof requestFacilitatorDecision>>;
+};
+
+const brokerState = readBrokerState();
+
 function readAuditRecords(): RequestAuditRecord[] {
     if (!fs.existsSync(REQUEST_AUDIT_FILE)) {
         return [];
@@ -48,6 +73,139 @@ function readAuditRecords(): RequestAuditRecord[] {
     }
 
     return JSON.parse(raw) as RequestAuditRecord[];
+}
+
+function readBrokerState(): BrokerState {
+    if (!fs.existsSync(BROKER_STATE_FILE)) {
+        return emptyBrokerState();
+    }
+
+    const raw = fs.readFileSync(BROKER_STATE_FILE, "utf8").trim();
+    if (!raw) {
+        return emptyBrokerState();
+    }
+
+    const parsed = JSON.parse(raw) as BrokerState;
+    if (!parsed || typeof parsed !== "object" || !parsed.envelopes || typeof parsed.envelopes !== "object") {
+        return emptyBrokerState();
+    }
+
+    return parsed;
+}
+
+function saveBrokerState(state: BrokerState) {
+    fs.writeFileSync(BROKER_STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+}
+
+function ensureRuntimeGuards() {
+    if (TON_NETWORK === "mainnet" && !ENABLE_MAINNET_MODE) {
+        throw new Error("Mainnet mode requires ENABLE_MAINNET_MODE=true");
+    }
+
+    if (TON_NETWORK === "mainnet") {
+        requiredEnv("AGENT_MNEMONIC");
+        requiredEnv("CONTRACT_ADDRESS");
+        if (!REQUEST_AUDIT_FILE.trim()) {
+            throw new Error("REQUEST_AUDIT_FILE must be configured in mainnet mode");
+        }
+        if (!BROKER_STATE_FILE.trim()) {
+            throw new Error("BROKER_STATE_FILE must be configured in mainnet mode");
+        }
+    }
+}
+
+function logEvent(event: string, data: Record<string, unknown>) {
+    console.error(JSON.stringify({
+        ts: new Date().toISOString(),
+        event,
+        ...data,
+    }));
+}
+
+async function preparePaymentRequest(args: {
+    contractAddress: string;
+    targetAddress: string;
+    amountInTon: string;
+    requestId: string;
+    facilitatorContext?: unknown;
+}): Promise<PaymentPreparation> {
+    const contractAddr = Address.parse(args.contractAddress);
+
+    let facilitatorDecision: Awaited<ReturnType<typeof requestFacilitatorDecision>> = null;
+    try {
+        facilitatorDecision = await requestFacilitatorDecision({
+            requestId: args.requestId,
+            contractAddress: args.contractAddress,
+            targetAddress: args.targetAddress,
+            amountInTon: args.amountInTon,
+            facilitatorContext: args.facilitatorContext,
+        }, {
+            url: X402_FACILITATOR_URL,
+            apiKey: X402_FACILITATOR_API_KEY,
+            timeoutMs: X402_FACILITATOR_TIMEOUT_MS,
+            retryAttempts: X402_FACILITATOR_RETRY_ATTEMPTS,
+            retryBackoffMs: X402_FACILITATOR_RETRY_BACKOFF_MS,
+            network: TON_NETWORK,
+        });
+    } catch (error) {
+        if (!FACILITATOR_FAIL_OPEN) {
+            throw error;
+        }
+        logEvent("facilitator_fail_open", {
+            requestId: args.requestId,
+            reason: error instanceof Error ? error.message : String(error),
+        });
+    }
+
+    const effectiveTargetAddress = facilitatorDecision?.targetAddress ?? args.targetAddress;
+    const effectiveAmountInTon = facilitatorDecision?.amountInTon ?? args.amountInTon;
+
+    return {
+        requestId: args.requestId,
+        contractAddr,
+        targetAddr: Address.parse(effectiveTargetAddress),
+        amountNano: toNano(effectiveAmountInTon),
+        amountInTon: effectiveAmountInTon,
+        facilitatorDecision,
+    };
+}
+
+async function submitPreparedPayment(client: TonClient, prepared: PaymentPreparation) {
+    const bufferNano = toNano(EXECUTION_BUFFER_TON);
+    const txValue = prepared.amountNano + bufferNano;
+
+    const { sender, address: agentWallet } = await getAgentSender(client);
+    const contract = client.open(TonPay402.fromAddress(prepared.contractAddr));
+    const remaining = await contract.getRemainingAllowance();
+
+    await contract.send(
+        sender,
+        { value: txValue },
+        {
+            $$type: "ExecutePayment",
+            amount: prepared.amountNano,
+            target: prepared.targetAddr,
+        }
+    );
+
+    const approvalExpected = prepared.amountNano > remaining;
+    appendAuditRecord({
+        requestId: prepared.requestId,
+        contractAddress: prepared.contractAddr.toString(),
+        targetAddress: prepared.targetAddr.toString(),
+        amountInTon: prepared.amountInTon,
+        amountNano: prepared.amountNano.toString(),
+        createdAt: new Date().toISOString(),
+        status: approvalExpected ? "approval_pending" : "submitted",
+        approvalExpected,
+        facilitatorUrl: X402_FACILITATOR_URL || undefined,
+        facilitatorReference: prepared.facilitatorDecision?.reference,
+    });
+
+    return {
+        agentWallet,
+        approvalExpected,
+    };
 }
 
 
@@ -134,6 +292,59 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 },
                 required: ["contractAddress", "targetAddress", "amountInTon"]
             }
+        },
+        {
+            name: "create_envelope",
+            description: "Create a broker envelope with shared budget for multiple agents",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    envelopeId: { type: "string" },
+                    totalBudgetTon: { type: "string" },
+                    periodSeconds: { type: "number", description: "Budget reset window in seconds" }
+                },
+                required: ["envelopeId", "totalBudgetTon", "periodSeconds"]
+            }
+        },
+        {
+            name: "assign_agent_to_envelope",
+            description: "Assign an agent identity to a broker envelope",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    envelopeId: { type: "string" },
+                    agentId: { type: "string" }
+                },
+                required: ["envelopeId", "agentId"]
+            }
+        },
+        {
+            name: "get_envelope_allowance",
+            description: "Get remaining allowance for a broker envelope",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    envelopeId: { type: "string" }
+                },
+                required: ["envelopeId"]
+            }
+        },
+        {
+            name: "execute_envelope_payment",
+            description: "Execute payment through a broker envelope budget, then on-chain TonPay402 policy",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    envelopeId: { type: "string" },
+                    agentId: { type: "string" },
+                    contractAddress: { type: "string" },
+                    targetAddress: { type: "string" },
+                    amountInTon: { type: "string" },
+                    requestId: { type: "string" },
+                    facilitatorContext: { type: "object" }
+                },
+                required: ["envelopeId", "agentId", "contractAddress", "targetAddress", "amountInTon"]
+            }
         }
     ]
 }));
@@ -166,71 +377,137 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const requestId = (request.params.arguments?.requestId as string | undefined)?.trim() ||
                 `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
-            const facilitatorDecision = await requestFacilitatorDecision({
-                requestId,
+            const prepared = await preparePaymentRequest({
                 contractAddress,
                 targetAddress,
                 amountInTon,
+                requestId,
                 facilitatorContext,
-            }, {
-                url: X402_FACILITATOR_URL,
-                apiKey: X402_FACILITATOR_API_KEY,
-                timeoutMs: X402_FACILITATOR_TIMEOUT_MS,
-                network: TON_NETWORK,
             });
+            const { agentWallet, approvalExpected } = await submitPreparedPayment(client, prepared);
 
-            const effectiveTargetAddress = facilitatorDecision?.targetAddress ?? targetAddress;
-            const effectiveAmountInTon = facilitatorDecision?.amountInTon ?? amountInTon;
-
-            const contractAddr = Address.parse(contractAddress);
-            const targetAddr = Address.parse(effectiveTargetAddress);
-            const amountNano = toNano(effectiveAmountInTon);
-            const bufferNano = toNano(EXECUTION_BUFFER_TON);
-            const txValue = amountNano + bufferNano;
-
-            const { sender, address: agentWallet } = await getAgentSender(client);
-            const contract = client.open(TonPay402.fromAddress(contractAddr));
-            const remaining = await contract.getRemainingAllowance();
-
-            await contract.send(
-                sender,
-                { value: txValue },
-                {
-                    $$type: "ExecutePayment",
-                    amount: amountNano,
-                    target: targetAddr,
-                }
-            );
-
-            const approvalHint = amountNano > remaining
+            const approvalHint = approvalExpected
                 ? " Payment is above allowance; contract should emit ApprovalRequest for Telegram workflow."
                 : "";
 
-            appendAuditRecord({
-                requestId,
-                contractAddress: contractAddr.toString(),
-                targetAddress: targetAddr.toString(),
-                amountInTon: effectiveAmountInTon,
-                amountNano: amountNano.toString(),
-                createdAt: new Date().toISOString(),
-                status: amountNano > remaining ? "approval_pending" : "submitted",
-                approvalExpected: amountNano > remaining,
-                facilitatorUrl: X402_FACILITATOR_URL || undefined,
-                facilitatorReference: facilitatorDecision?.reference,
-            });
-
             const facilitatorHint = X402_FACILITATOR_URL
-                ? ` Facilitator${facilitatorDecision?.reference ? ` ref=${facilitatorDecision.reference}` : ""}${facilitatorDecision?.note ? ` (${facilitatorDecision.note})` : ""}.`
+                ? ` Facilitator${prepared.facilitatorDecision?.reference ? ` ref=${prepared.facilitatorDecision.reference}` : ""}${prepared.facilitatorDecision?.note ? ` (${prepared.facilitatorDecision.note})` : ""}.`
                 : "";
+            logEvent("payment_submitted", {
+                requestId,
+                contractAddress: prepared.contractAddr.toString(),
+                targetAddress: prepared.targetAddr.toString(),
+                amountNano: prepared.amountNano.toString(),
+                approvalExpected,
+            });
             
             return {
                 content: [
                     {
                         type: "text",
-                        text: `Submitted ExecutePayment [requestId=${requestId}] from agent wallet ${agentWallet.toString()} for ${effectiveAmountInTon} TON to ${targetAddr.toString()} on contract ${contractAddr.toString()}.${approvalHint}${facilitatorHint}`
+                        text: `Submitted ExecutePayment [requestId=${requestId}] from agent wallet ${agentWallet.toString()} for ${prepared.amountInTon} TON to ${prepared.targetAddr.toString()} on contract ${prepared.contractAddr.toString()}.${approvalHint}${facilitatorHint}`
                     }
                 ]
             };
+        }
+
+        case "create_envelope": {
+            const envelopeId = request.params.arguments?.envelopeId as string;
+            const totalBudgetTon = request.params.arguments?.totalBudgetTon as string;
+            const periodSeconds = Number(request.params.arguments?.periodSeconds);
+            const envelope = createEnvelope({
+                state: brokerState,
+                envelopeId,
+                totalBudgetNano: toNano(totalBudgetTon),
+                periodSeconds,
+            });
+            saveBrokerState(brokerState);
+            return {
+                content: [{
+                    type: "text",
+                    text: `Created envelope ${envelope.id} with budget ${fromNano(BigInt(envelope.totalBudgetNano))} TON per ${envelope.periodSeconds}s window.`,
+                }],
+            };
+        }
+
+        case "assign_agent_to_envelope": {
+            const envelopeId = request.params.arguments?.envelopeId as string;
+            const agentId = request.params.arguments?.agentId as string;
+            const envelope = assignAgentToEnvelope({ state: brokerState, envelopeId, agentId });
+            saveBrokerState(brokerState);
+            return {
+                content: [{
+                    type: "text",
+                    text: `Assigned agent ${agentId} to envelope ${envelope.id}.`,
+                }],
+            };
+        }
+
+        case "get_envelope_allowance": {
+            const envelopeId = request.params.arguments?.envelopeId as string;
+            const { envelope, remainingNano } = getEnvelopeAllowance({ state: brokerState, envelopeId });
+            saveBrokerState(brokerState);
+            return {
+                content: [{
+                    type: "text",
+                    text: `Envelope ${envelope.id} remaining allowance: ${fromNano(remainingNano)} TON (spent ${fromNano(BigInt(envelope.spentInWindowNano))}/${fromNano(BigInt(envelope.totalBudgetNano))}).`,
+                }],
+            };
+        }
+
+        case "execute_envelope_payment": {
+            const envelopeId = request.params.arguments?.envelopeId as string;
+            const agentId = request.params.arguments?.agentId as string;
+            const contractAddress = request.params.arguments?.contractAddress as string;
+            const targetAddress = request.params.arguments?.targetAddress as string;
+            const amountInTon = request.params.arguments?.amountInTon as string;
+            const facilitatorContext = request.params.arguments?.facilitatorContext;
+            const requestId = (request.params.arguments?.requestId as string | undefined)?.trim() ||
+                `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+
+            const prepared = await preparePaymentRequest({
+                contractAddress,
+                targetAddress,
+                amountInTon,
+                requestId,
+                facilitatorContext,
+            });
+
+            reserveEnvelopeBudget({
+                state: brokerState,
+                envelopeId,
+                agentId,
+                amountNano: prepared.amountNano,
+            });
+            saveBrokerState(brokerState);
+
+            try {
+                const { agentWallet, approvalExpected } = await submitPreparedPayment(client, prepared);
+                const { remainingNano } = getEnvelopeAllowance({ state: brokerState, envelopeId });
+                saveBrokerState(brokerState);
+                logEvent("envelope_payment_submitted", {
+                    requestId,
+                    envelopeId,
+                    agentId,
+                    amountNano: prepared.amountNano.toString(),
+                    remainingNano: remainingNano.toString(),
+                });
+
+                return {
+                    content: [{
+                        type: "text",
+                        text: `Envelope payment submitted [requestId=${requestId}] by ${agentId} via wallet ${agentWallet.toString()} for ${prepared.amountInTon} TON. Envelope remaining: ${fromNano(remainingNano)} TON.${approvalExpected ? " Approval workflow expected." : ""}`,
+                    }],
+                };
+            } catch (error) {
+                rollbackEnvelopeReservation({
+                    state: brokerState,
+                    envelopeId,
+                    amountNano: prepared.amountNano,
+                });
+                saveBrokerState(brokerState);
+                throw error;
+            }
         }
         
         default:
@@ -240,6 +517,16 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server using Standard I/O transport
 async function main() {
+    ensureRuntimeGuards();
+    logEvent("mcp_startup", {
+        network: TON_NETWORK,
+        mainnetEnabled: ENABLE_MAINNET_MODE,
+        facilitatorConfigured: Boolean(X402_FACILITATOR_URL),
+        facilitatorFailOpen: FACILITATOR_FAIL_OPEN,
+        facilitatorRetryAttempts: X402_FACILITATOR_RETRY_ATTEMPTS,
+        brokerStateFile: BROKER_STATE_FILE,
+        requestAuditFile: REQUEST_AUDIT_FILE,
+    });
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("TonPay402 MCP Server running...");
