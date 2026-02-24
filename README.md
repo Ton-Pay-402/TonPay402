@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![TON Network](https://img.shields.io/badge/TON-Testnet-0098EA)](https://ton.org)
-[![Tests Passing](https://img.shields.io/badge/Tests-Passing-brightgreen)](https://github.com/Ton-Pay-402/TonPay402/actions)
+[![Tests](https://github.com/Ton-Pay-402/TonPay402/actions/workflows/tests.yml/badge.svg)](https://github.com/Ton-Pay-402/TonPay402/actions/workflows/tests.yml)
 [![MCP](https://img.shields.io/badge/MCP-Server-5A67D8)](./mcp-server)
 
 ![TonPay402 Infographic](docs/screenshots/TonPay402-infographic.png)
