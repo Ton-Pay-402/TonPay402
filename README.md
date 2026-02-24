@@ -63,6 +63,7 @@ TonPay402 provides a supervised spending stack for agents:
 - **MCP tool interface** for agent-native execution
 - **Telegram HITL approvals** for exceptional payments
 - **Persistent audit state** for production-safe operations
+- **Wallet V5R1 runtime signers** in MCP server (agent) and Telegram bot (owner)
 
 ## Architecture
 🏗️ Architecture
@@ -123,6 +124,13 @@ Current policy in `contracts/ton_pay402.tact`:
 - Whitelisted targets bypass daily-limit accounting for agent payments
 - Over-limit agent request escalates to manual approval path
 - Owner can execute approved payment manually
+
+## Wallet Version Status
+
+- ✅ Runtime signing is implemented with **WalletContractV5R1** in:
+  - `mcp-server/index.ts` (agent signer)
+  - `mcp-server/bot.ts` (owner signer)
+- ⏳ Roadmap item "Mainnet Deployment with Wallet V5 integration" still refers to production rollout hardening, not basic signer support.
 
 ## Prerequisites
 
@@ -221,9 +229,10 @@ npm run start:bot
 ## 🗺️ Roadmap
 - [x] Core Tact Contract for Policy Management.
 - [x] MCP Server for LLM tool-calling.
+- [x] Wallet V5R1 runtime signer support (MCP agent + Telegram owner).
 - [ ] Integration with AEON/x402 facilitators .
 - [ ] Multi-agent "Broker" for shared budget envelopes .
-- [ ] Mainnet Deployment with Wallet V5 integration.
+- [ ] Mainnet rollout hardening for Wallet V5 architecture.
 
 ## License
 

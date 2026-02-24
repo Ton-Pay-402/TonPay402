@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { Address, TonClient, WalletContractV4, toNano, fromNano } from "@ton/ton";
+import { Address, TonClient, WalletContractV5R1, toNano, fromNano } from "@ton/ton";
 import { getHttpEndpoint } from "@orbs-network/ton-access";
 import { mnemonicToWalletKey } from "@ton/crypto";
 import { TonPay402 } from "../build/TonPay402/TonPay402_TonPay402";
@@ -79,7 +79,7 @@ async function getAgentSender(client: TonClient) {
     const mnemonic = requiredEnv("AGENT_MNEMONIC");
     const words = mnemonic.split(/\s+/).filter(Boolean);
     const keyPair = await mnemonicToWalletKey(words);
-    const wallet = WalletContractV4.create({
+    const wallet = WalletContractV5R1.create({
         workchain: AGENT_WALLET_WORKCHAIN,
         publicKey: keyPair.publicKey,
     });

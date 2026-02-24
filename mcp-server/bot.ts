@@ -1,5 +1,5 @@
 import { Bot, InlineKeyboard } from "grammy";
-import { Address, fromNano, TonClient, WalletContractV4, toNano } from "@ton/ton";
+import { Address, fromNano, TonClient, WalletContractV5R1, toNano } from "@ton/ton";
 import { getHttpEndpoint } from "@orbs-network/ton-access";
 import { mnemonicToWalletKey } from "@ton/crypto";
 import dotenv from "dotenv";
@@ -259,7 +259,7 @@ async function getOwnerSender(client: TonClient) {
     const mnemonic = requiredEnv("OWNER_MNEMONIC");
     const words = mnemonic.split(/\s+/).filter(Boolean);
     const keyPair = await mnemonicToWalletKey(words);
-    const wallet = WalletContractV4.create({
+    const wallet = WalletContractV5R1.create({
         workchain: OWNER_WALLET_WORKCHAIN,
         publicKey: keyPair.publicKey,
     });
