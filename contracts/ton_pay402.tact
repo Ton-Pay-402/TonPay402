@@ -12,22 +12,22 @@ message UpdateSettings {
 }
 
 // Message to add/remove a target from the trusted whitelist
-message UpdateWhitelist {
+message(0xdf66564c) UpdateWhitelist {
     target: Address;
     allowed: Bool;
 }
 
 // Owner-only emergency controls
-message EmergencyStop {}
-message ResumeOperations {}
+message(0x6d273de6) EmergencyStop {}
+message(0x279f1b5d) ResumeOperations {}
 
 // Event emitted when a transaction exceeds the limit and needs human eyes
-message ApprovalRequest {
+message(0xd039daef) ApprovalRequest {
     amount: Int as coins;
     target: Address;
 }
 
-contract TonPay402 with Deployable {
+contract TonPay402 {
     owner: Address;           // The human supervisor
     agent: Address;           // The authorized AI agent
     dailyLimit: Int as coins; // Max amount allowed per 24h
@@ -52,6 +52,11 @@ contract TonPay402 with Deployable {
             self.spentToday = 0;
             self.lastReset = now();
         }
+    }
+
+    // Empty receiver for deployment and value top-ups.
+    receive() {
+        cashback(sender());
     }
 
     // Management: Owner can pause all agent-initiated payment execution

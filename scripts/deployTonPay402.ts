@@ -14,7 +14,7 @@ export async function run(provider: NetworkProvider) {
         {
             value: toNano('0.05'),
         },
-        { $$type: 'Deploy', queryId: 0n },
+        { $$type: 'UpdateSettings', newLimit: dailyLimit },
     );
 
     await provider.waitForDeploy(tonPay402.address);

@@ -24,7 +24,7 @@ describe('TonPay402 spending limits', () => {
         const deployResult = await tonPay402.send(
             deployer.getSender(),
             { value: toNano('0.05') },
-            { $$type: 'Deploy', queryId: 0n }
+            { $$type: 'UpdateSettings', newLimit: toNano('10') }
         );
 
         expect(deployResult.transactions).toHaveTransaction({
