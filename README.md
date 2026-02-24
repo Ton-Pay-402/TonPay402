@@ -19,6 +19,7 @@ TonPay 402 is a specialized infrastructure toolkit designed to enable secure, au
 - ✅ **On-chain spending policy enforcement** (not only backend checks)
 - ✅ **Human-in-the-loop approval path** for risky transactions (`ApprovalRequest` -> Approve/Reject)
 - ✅ **Whitelist bypass for trusted targets** (agent can pay approved oracles/APIs without daily cap)
+- ✅ **Emergency Kill-Switch** (owner can instantly pause all agent payment execution)
 - ✅ **Durable approval state + idempotent handling** (restart-safe bot workflows)
 - ✅ **End-to-end audit correlation** via `requestId` + approval refs + status transitions
 
@@ -28,6 +29,7 @@ TonPay 402 is a specialized infrastructure toolkit designed to enable secure, au
 |---|---|---|
 | Core flow | Paywall access (pay -> token) | Policy-checked treasury execution |
 | Over-limit handling | Usually reject/fail | Emit `ApprovalRequest` + human approval path |
+| Emergency response | Usually off-chain/manual | On-chain `EmergencyStop` / `ResumeOperations` controls |
 | Trusted vendor fast lane | Rare | Whitelist-based limit bypass for approved recipients |
 | Approval lifecycle | Minimal/manual | `pending -> approved/rejected/failed` persisted state |
 | Auditability | Basic payment logs | Correlated `requestId` + approval records + status trail |
@@ -92,6 +94,7 @@ TonPay402 combines:
 1. Agent calls MCP tool `execute_m2m_payment`.
 2. MCP server sends `ExecutePayment` to contract using the **agent wallet**.
 3. Contract behavior:
+   - If emergency mode is active: blocks all agent-initiated payments.
    - If target is whitelisted: executes transfer without consuming daily limit.
    - If target is not whitelisted and within limit: executes transfer.
    - If target is not whitelisted and over limit (agent path): emits `ApprovalRequest` and does not transfer.
@@ -114,6 +117,7 @@ Each request is identified by a stable approval reference and can be correlated 
 Current policy in `contracts/ton_pay402.tact`:
 
 - Access control: only `owner` or `agent` can call `ExecutePayment`
+- Owner-only emergency controls: `EmergencyStop` and `ResumeOperations`
 - Daily spend limit with 24h reset
 - Owner-managed whitelist for trusted recipients
 - Whitelisted targets bypass daily-limit accounting for agent payments

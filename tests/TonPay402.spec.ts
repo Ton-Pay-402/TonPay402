@@ -153,6 +153,72 @@ describe('TonPay402 spending limits', () => {
         });
     });
 
+    it('should block agent payments during emergency stop while owner can still execute and then resume', async () => {
+        await tonPay402.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            { $$type: 'EmergencyStop' }
+        );
+
+        expect(await tonPay402.getEmergencyStatus()).toBe(true);
+
+        const blockedResult = await tonPay402.send(
+            agent.getSender(),
+            { value: toNano('1.1') },
+            {
+                $$type: 'ExecutePayment',
+                amount: toNano('1'),
+                target: merchant.address,
+            }
+        );
+
+        expect(blockedResult.transactions).toHaveTransaction({
+            from: agent.address,
+            to: tonPay402.address,
+            success: false,
+        });
+
+        const ownerBypassResult = await tonPay402.send(
+            deployer.getSender(),
+            { value: toNano('1.1') },
+            {
+                $$type: 'ExecutePayment',
+                amount: toNano('1'),
+                target: merchant.address,
+            }
+        );
+
+        expect(ownerBypassResult.transactions).toHaveTransaction({
+            from: tonPay402.address,
+            to: merchant.address,
+            success: true,
+        });
+
+        await tonPay402.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            { $$type: 'ResumeOperations' }
+        );
+
+        expect(await tonPay402.getEmergencyStatus()).toBe(false);
+
+        const resumedResult = await tonPay402.send(
+            agent.getSender(),
+            { value: toNano('1.1') },
+            {
+                $$type: 'ExecutePayment',
+                amount: toNano('1'),
+                target: merchant.address,
+            }
+        );
+
+        expect(resumedResult.transactions).toHaveTransaction({
+            from: tonPay402.address,
+            to: merchant.address,
+            success: true,
+        });
+    });
+
     it('should reset limit after 24 hours', async () => {
         // 1. Spend 9 TON (almost full limit)
         await tonPay402.send(agent.getSender(), { value: toNano('9.1') }, {

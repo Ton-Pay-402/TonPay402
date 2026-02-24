@@ -17,6 +17,10 @@ message UpdateWhitelist {
     allowed: Bool;
 }
 
+// Owner-only emergency controls
+message EmergencyStop {}
+message ResumeOperations {}
+
 // Event emitted when a transaction exceeds the limit and needs human eyes
 message ApprovalRequest {
     amount: Int as coins;
@@ -30,6 +34,7 @@ contract TonPay402 with Deployable {
     spentToday: Int as coins; // Tracking current usage
     lastReset: Int as uint32; // Timestamp of the last limit reset
     whitelist: map<Address, Bool>; // Trusted recipients for unrestricted agent payments
+    emergencyStopped: Bool; // If true, agent payment execution is suspended
 
     init(owner: Address, agent: Address, initialLimit: Int) {
         self.owner = owner;
@@ -38,6 +43,7 @@ contract TonPay402 with Deployable {
         self.spentToday = 0;
         self.lastReset = now(); // Initialized with deployment time
         self.whitelist = emptyMap();
+        self.emergencyStopped = false;
     }
 
     // Internal function to check and reset the daily allowance if 24 hours passed
@@ -48,6 +54,18 @@ contract TonPay402 with Deployable {
         }
     }
 
+    // Management: Owner can pause all agent-initiated payment execution
+    receive(msg: EmergencyStop) {
+        require(sender() == self.owner, "Access Denied: Only owner can trigger emergency stop");
+        self.emergencyStopped = true;
+    }
+
+    // Management: Owner can resume agent-initiated payment execution
+    receive(msg: ResumeOperations) {
+        require(sender() == self.owner, "Access Denied: Only owner can resume operations");
+        self.emergencyStopped = false;
+    }
+
     // Logic to handle payment requests from the Agent
     receive(msg: ExecutePayment) {
         let isOwner = sender() == self.owner;
@@ -56,6 +74,7 @@ contract TonPay402 with Deployable {
         // 0. Access control: only the agent or owner can execute payments
         require(isAgent || isOwner, "Access Denied: Only agent or owner can execute payments");
         require(msg.amount > 0, "Invalid amount");
+        require(!isAgent || !self.emergencyStopped, "Emergency Stop Active: Agent payments are paused");
 
         // 1. Refresh the daily allowance state
         self.checkAndResetLimit();
@@ -120,5 +139,9 @@ contract TonPay402 with Deployable {
 
     get fun is_whitelisted(target: Address): Bool {
         return self.whitelist.get(target) != null;
+    }
+
+    get fun emergency_status(): Bool {
+        return self.emergencyStopped;
     }
 }
