@@ -55,6 +55,38 @@ describe('TonPay402 spending limits', () => {
         });
     });
 
+    it('should allow agent over-limit payment to whitelisted target without consuming daily limit', async () => {
+        await tonPay402.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'UpdateWhitelist',
+                target: merchant.address,
+                allowed: true,
+            }
+        );
+
+        const overLimitResult = await tonPay402.send(
+            agent.getSender(),
+            { value: toNano('15.1') },
+            {
+                $$type: 'ExecutePayment',
+                amount: toNano('15'),
+                target: merchant.address,
+            }
+        );
+
+        expect(overLimitResult.transactions).toHaveTransaction({
+            from: tonPay402.address,
+            to: merchant.address,
+            success: true,
+        });
+
+        // Whitelisted transfers bypass daily limit accounting.
+        const remaining = await tonPay402.getRemainingAllowance();
+        expect(remaining).toEqual(toNano('10'));
+    });
+
     it('should emit approval path and not transfer when agent exceeds limit', async () => {
         const amount = toNano('15'); // 15 TON > 10 TON limit
 

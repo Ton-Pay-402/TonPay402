@@ -6,12 +6,53 @@ import { getHttpEndpoint } from "@orbs-network/ton-access";
 import { mnemonicToWalletKey } from "@ton/crypto";
 import { TonPay402 } from "../build/TonPay402/TonPay402_TonPay402";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
 const TON_NETWORK = process.env.TON_NETWORK ?? "testnet";
 const AGENT_WALLET_WORKCHAIN = Number(process.env.AGENT_WALLET_WORKCHAIN ?? "0");
 const EXECUTION_BUFFER_TON = process.env.EXECUTION_BUFFER_TON ?? "0.1";
+const REQUEST_AUDIT_FILE = path.resolve(process.cwd(), process.env.REQUEST_AUDIT_FILE ?? "request-audit.json");
+
+type RequestAuditStatus = "submitted" | "approval_pending" | "approved" | "rejected" | "failed";
+
+type RequestAuditRecord = {
+    requestId: string;
+    contractAddress: string;
+    targetAddress: string;
+    amountInTon: string;
+    amountNano: string;
+    createdAt: string;
+    status: RequestAuditStatus;
+    approvalExpected: boolean;
+    consumedByApprovalId?: string;
+    statusUpdatedAt?: string;
+};
+
+function readAuditRecords(): RequestAuditRecord[] {
+    if (!fs.existsSync(REQUEST_AUDIT_FILE)) {
+        return [];
+    }
+
+    const raw = fs.readFileSync(REQUEST_AUDIT_FILE, "utf8").trim();
+    if (!raw) {
+        return [];
+    }
+
+    return JSON.parse(raw) as RequestAuditRecord[];
+}
+
+function saveAuditRecords(records: RequestAuditRecord[]) {
+    fs.writeFileSync(REQUEST_AUDIT_FILE, JSON.stringify(records, null, 2), "utf8");
+}
+
+function appendAuditRecord(record: RequestAuditRecord) {
+    const records = readAuditRecords();
+    records.push(record);
+    saveAuditRecords(records);
+}
 
 function requiredEnv(name: string): string {
     const value = process.env[name];
@@ -77,7 +118,8 @@ server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 properties: {
                     contractAddress: { type: "string" },
                     targetAddress: { type: "string" },
-                    amountInTon: { type: "string", description: "Amount to pay in TON (e.g. '0.5')" }
+                    amountInTon: { type: "string", description: "Amount to pay in TON (e.g. '0.5')" },
+                    requestId: { type: "string", description: "Optional external correlation ID for audit logs" }
                 },
                 required: ["contractAddress", "targetAddress", "amountInTon"]
             }
@@ -109,6 +151,8 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const contractAddress = request.params.arguments?.contractAddress as string;
             const targetAddress = request.params.arguments?.targetAddress as string;
             const amountInTon = request.params.arguments?.amountInTon as string;
+            const requestId = (request.params.arguments?.requestId as string | undefined)?.trim() ||
+                `req_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
             const contractAddr = Address.parse(contractAddress);
             const targetAddr = Address.parse(targetAddress);
@@ -133,12 +177,23 @@ server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const approvalHint = amountNano > remaining
                 ? " Payment is above allowance; contract should emit ApprovalRequest for Telegram workflow."
                 : "";
+
+            appendAuditRecord({
+                requestId,
+                contractAddress: contractAddr.toString(),
+                targetAddress: targetAddr.toString(),
+                amountInTon,
+                amountNano: amountNano.toString(),
+                createdAt: new Date().toISOString(),
+                status: amountNano > remaining ? "approval_pending" : "submitted",
+                approvalExpected: amountNano > remaining,
+            });
             
             return {
                 content: [
                     {
                         type: "text",
-                        text: `Submitted ExecutePayment from agent wallet ${agentWallet.toString()} for ${amountInTon} TON to ${targetAddr.toString()} on contract ${contractAddr.toString()}.${approvalHint}`
+                        text: `Submitted ExecutePayment [requestId=${requestId}] from agent wallet ${agentWallet.toString()} for ${amountInTon} TON to ${targetAddr.toString()} on contract ${contractAddr.toString()}.${approvalHint}`
                     }
                 ]
             };

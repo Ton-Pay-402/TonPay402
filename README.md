@@ -8,6 +8,37 @@
 🤖 TonPay 402: The Universal M2M Payment Rail for TON AI Agents
 TonPay 402 is a specialized infrastructure toolkit designed to enable secure, autonomous, and policy-driven payments for AI agents on the TON Blockchain. By leveraging the Wallet V5 (W5) standard and the x402 (HTTP 402) protocol, it provides the "financial guardrails" necessary for agents to participate in the machine economy without compromising user funds.
 
+## ⚡ Unique Differentiators (ویژگی‌های منحصر‌به‌فرد)
+
+> **TonPay402 is not just a 402 paywall gateway — it is a treasury policy engine for AI agents.**
+
+### What you see in 10 seconds
+
+- ✅ **On-chain spending policy enforcement** (not only backend checks)
+- ✅ **Human-in-the-loop approval path** for risky transactions (`ApprovalRequest` -> Approve/Reject)
+- ✅ **Whitelist bypass for trusted targets** (agent can pay approved oracles/APIs without daily cap)
+- ✅ **Durable approval state + idempotent handling** (restart-safe bot workflows)
+- ✅ **End-to-end audit correlation** via `requestId` + approval refs + status transitions
+
+## TonPay402 vs Generic 402 Gateway Model
+
+| Capability | Generic 402 Gateway | TonPay402 |
+|---|---|---|
+| Core flow | Paywall access (pay -> token) | Policy-checked treasury execution |
+| Over-limit handling | Usually reject/fail | Emit `ApprovalRequest` + human approval path |
+| Trusted vendor fast lane | Rare | Whitelist-based limit bypass for approved recipients |
+| Approval lifecycle | Minimal/manual | `pending -> approved/rejected/failed` persisted state |
+| Auditability | Basic payment logs | Correlated `requestId` + approval records + status trail |
+| Agent safety | Limited | On-chain spend limits + explicit HITL escalation |
+
+## Positioning
+
+TonPay402 is a **policy engine for agent treasuries**, not only a payment gateway.
+
+- Focus: autonomous spend with hard guardrails + human escalation
+- Primary user: operators of AI agents that need both automation and accountability
+- Core promise: programmable spending policies, approval lifecycle, and audit traceability
+
 ## Problem 
 
 🚀 The Problem: The "Toddler with a Credit Card" Dilemma
@@ -21,19 +52,13 @@ Require constant human approval, defeating the purpose of autonomy.
 ## Solution
 
 ✅ The Solution: TonPay 402
-TonPay 402 acts as a Supervised Gateway. It uses Wallet V5 Extensions to enforce on-chain spending limits and a Telegram-native Human-in-the-Loop (HITL) plane for high-value transactions.
+TonPay402 provides a supervised spending stack for agents:
 
-Key Features
-W5 Policy Extensions: Programmable guardrails (Daily limits, Whitelists) enforced directly on the TVM.
-x402 Protocol Implementation: Seamless machine-to-machine commerce using the HTTP 402 "Payment Required" 
-
-standard .
-Gasless Transactions: Agents can pay network fees in USDT/Jettons, removing the need to manage native 
-
-TON for gas .
-MCP Server (Model Context Protocol): A standard bridge that allows LLMs (Claude, GPT) to "understand" and execute TON smart contract calls.
-
-Telegram HITL Dashboard: A Mini App for humans to set budgets and approve "Exception Requests" in real-time .
+- **On-chain policy contract** for daily budget controls
+- **Whitelist policy** for trusted recipients (oracle/API fast lane)
+- **MCP tool interface** for agent-native execution
+- **Telegram HITL approvals** for exceptional payments
+- **Persistent audit state** for production-safe operations
 
 ## Architecture
 🏗️ Architecture
@@ -65,10 +90,22 @@ TonPay402 combines:
 1. Agent calls MCP tool `execute_m2m_payment`.
 2. MCP server sends `ExecutePayment` to contract using the **agent wallet**.
 3. Contract behavior:
-   - If within limit: executes transfer.
-   - If over limit (agent path): emits `ApprovalRequest` and does not transfer.
+   - If target is whitelisted: executes transfer without consuming daily limit.
+   - If target is not whitelisted and within limit: executes transfer.
+   - If target is not whitelisted and over limit (agent path): emits `ApprovalRequest` and does not transfer.
 4. Telegram bot polls contract transactions, decodes `ApprovalRequest`, and notifies owner.
 5. Owner taps **Approve** (owner wallet sends `ExecutePayment`) or **Reject**.
+
+## Approval Lifecycle & Audit State
+
+TonPay402 tracks manual-approval requests through a durable lifecycle in the bot state file:
+
+- `pending` — request detected from chain and awaiting decision
+- `approved` — owner approved and submission was sent
+- `rejected` — owner explicitly rejected
+- `failed` — approval action failed during submission
+
+Each request is identified by a stable approval reference and can be correlated with client-side `requestId` in MCP payment submissions.
 
 ## Smart Contract Policy
 
@@ -76,6 +113,8 @@ Current policy in `contracts/ton_pay402.tact`:
 
 - Access control: only `owner` or `agent` can call `ExecutePayment`
 - Daily spend limit with 24h reset
+- Owner-managed whitelist for trusted recipients
+- Whitelisted targets bypass daily-limit accounting for agent payments
 - Over-limit agent request escalates to manual approval path
 - Owner can execute approved payment manually
 
@@ -127,6 +166,9 @@ Fill `.env` values:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `APPROVAL_POLL_INTERVAL_MS`
+- `APPROVAL_STATE_FILE` (persistent bot state file, default `approval-state.json`)
+- `BOOTSTRAP_HISTORY_LIMIT` (how many recent txs to mark as seen on first startup)
+- `REQUEST_AUDIT_FILE` (shared MCP/bot request audit log, default `request-audit.json`)
 
 > Never commit real mnemonics or bot secrets.
 
@@ -151,7 +193,7 @@ npm run start:bot
   - Output: remaining allowance in TON
 
 - `execute_m2m_payment`
-  - Input: `contractAddress`, `targetAddress`, `amountInTon`
+  - Input: `contractAddress`, `targetAddress`, `amountInTon`, optional `requestId`
   - Sends `ExecutePayment` from agent wallet
   - Over-limit requests are escalated by contract and picked up by Telegram bot
 
@@ -160,7 +202,8 @@ npm run start:bot
 - Use separate mnemonics for owner and agent wallets.
 - Keep owner mnemonic only in secure runtime environments.
 - Restrict Telegram bot usage to the owner chat ID.
-- Consider persistent storage for pending approvals in production.
+- Back up and protect `APPROVAL_STATE_FILE` since it stores approval/audit state.
+- Back up and protect `REQUEST_AUDIT_FILE` since it links `requestId` to approval outcomes.
 - Consider indexed/event-driven ingestion (webhook/indexer) instead of pure polling.
 
 ## Development Notes

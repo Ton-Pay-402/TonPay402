@@ -11,6 +11,12 @@ message UpdateSettings {
     newLimit: Int as coins;
 }
 
+// Message to add/remove a target from the trusted whitelist
+message UpdateWhitelist {
+    target: Address;
+    allowed: Bool;
+}
+
 // Event emitted when a transaction exceeds the limit and needs human eyes
 message ApprovalRequest {
     amount: Int as coins;
@@ -23,6 +29,7 @@ contract TonPay402 with Deployable {
     dailyLimit: Int as coins; // Max amount allowed per 24h
     spentToday: Int as coins; // Tracking current usage
     lastReset: Int as uint32; // Timestamp of the last limit reset
+    whitelist: map<Address, Bool>; // Trusted recipients for unrestricted agent payments
 
     init(owner: Address, agent: Address, initialLimit: Int) {
         self.owner = owner;
@@ -30,6 +37,7 @@ contract TonPay402 with Deployable {
         self.dailyLimit = initialLimit;
         self.spentToday = 0;
         self.lastReset = now(); // Initialized with deployment time
+        self.whitelist = emptyMap();
     }
 
     // Internal function to check and reset the daily allowance if 24 hours passed
@@ -52,17 +60,22 @@ contract TonPay402 with Deployable {
         // 1. Refresh the daily allowance state
         self.checkAndResetLimit();
 
-        // 2. Manual approval flow: agent cannot exceed limit directly.
-        // Owner can submit the same payment manually after out-of-band approval.
-        if (isAgent && self.spentToday + msg.amount > self.dailyLimit) {
-            // Emit event for off-chain listeners (e.g. Telegram bot bridge)
-            emit(ApprovalRequest{amount: msg.amount, target: msg.target}.toCell());
-            self.reply("Policy Limit Reached: Approval request emitted".asComment());
-            return;
-        }
+        let isWhitelisted = self.whitelist.get(msg.target) != null;
 
-        // 3. Update the tracking state
-        self.spentToday += msg.amount;
+        // 2. Non-whitelisted targets follow normal policy controls.
+        if (!isWhitelisted) {
+            // Manual approval flow: agent cannot exceed limit directly.
+            // Owner can submit the same payment manually after out-of-band approval.
+            if (isAgent && self.spentToday + msg.amount > self.dailyLimit) {
+                // Emit event for off-chain listeners (e.g. Telegram bot bridge)
+                emit(ApprovalRequest{amount: msg.amount, target: msg.target}.toCell());
+                self.reply("Policy Limit Reached: Approval request emitted".asComment());
+                return;
+            }
+
+            // 3. Update tracked spend for policy-limited targets
+            self.spentToday += msg.amount;
+        }
 
         // 4. Execute the transfer on TON 
         send(SendParameters{
@@ -82,6 +95,17 @@ contract TonPay402 with Deployable {
         self.dailyLimit = msg.newLimit;
     }
 
+    // Management: Owner can add/remove trusted recipients from whitelist
+    receive(msg: UpdateWhitelist) {
+        require(sender() == self.owner, "Access Denied: Only owner can update whitelist");
+
+        if (msg.allowed) {
+            self.whitelist.set(msg.target, true);
+        } else {
+            self.whitelist.set(msg.target, null);
+        }
+    }
+
     // GETTER: Used by AI Agent or UI to check how much it can still spend 
     get fun remaining_allowance(): Int {
         if (now() >= self.lastReset + 86400) {
@@ -92,5 +116,9 @@ contract TonPay402 with Deployable {
 
     get fun daily_limit(): Int {
         return self.dailyLimit;
+    }
+
+    get fun is_whitelisted(target: Address): Bool {
+        return self.whitelist.get(target) != null;
     }
 }

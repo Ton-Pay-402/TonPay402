@@ -3,6 +3,8 @@ import { Address, fromNano, TonClient, WalletContractV4, toNano } from "@ton/ton
 import { getHttpEndpoint } from "@orbs-network/ton-access";
 import { mnemonicToWalletKey } from "@ton/crypto";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 import { loadApprovalRequest, TonPay402 } from "../build/TonPay402/TonPay402_TonPay402";
 
 dotenv.config();
@@ -14,6 +16,9 @@ const TON_NETWORK = process.env.TON_NETWORK ?? "testnet";
 const POLL_INTERVAL_MS = Number(process.env.APPROVAL_POLL_INTERVAL_MS ?? "10000");
 const OWNER_WALLET_WORKCHAIN = Number(process.env.OWNER_WALLET_WORKCHAIN ?? "0");
 const EXECUTION_BUFFER_TON = process.env.EXECUTION_BUFFER_TON ?? "0.1";
+const APPROVAL_STATE_FILE = path.resolve(process.cwd(), process.env.APPROVAL_STATE_FILE ?? "approval-state.json");
+const BOOTSTRAP_HISTORY_LIMIT = Number(process.env.BOOTSTRAP_HISTORY_LIMIT ?? "20");
+const REQUEST_AUDIT_FILE = path.resolve(process.cwd(), process.env.REQUEST_AUDIT_FILE ?? "request-audit.json");
 
 type PendingApproval = {
     id: string;
@@ -23,8 +28,54 @@ type PendingApproval = {
     txHashHex: string;
 };
 
+type ApprovalStatus = "pending" | "approved" | "rejected" | "failed";
+
+type ApprovalRecord = PendingApproval & {
+    status: ApprovalStatus;
+    createdAt: string;
+    requestId?: string;
+    resolvedAt?: string;
+    resolvedBy?: string;
+    ownerWallet?: string;
+    submitError?: string;
+};
+
+type RequestAuditStatus = "submitted" | "approval_pending" | "approved" | "rejected" | "failed";
+
+type RequestAuditRecord = {
+    requestId: string;
+    contractAddress: string;
+    targetAddress: string;
+    amountInTon: string;
+    amountNano: string;
+    createdAt: string;
+    status: RequestAuditStatus;
+    approvalExpected: boolean;
+    consumedByApprovalId?: string;
+    statusUpdatedAt?: string;
+};
+
+type PersistedState = {
+    approvals: Record<string, {
+        id: string;
+        amount: string;
+        target: string;
+        txLt: string;
+        txHashHex: string;
+        status: ApprovalStatus;
+        createdAt: string;
+        requestId?: string;
+        resolvedAt?: string;
+        resolvedBy?: string;
+        ownerWallet?: string;
+        submitError?: string;
+    }>;
+    seenTransactions: string[];
+};
+
 const pendingApprovals = new Map<string, PendingApproval>();
 const seenTransactions = new Set<string>();
+const approvalRecords = new Map<string, ApprovalRecord>();
 
 function requiredEnv(name: string): string {
     const value = process.env[name];
@@ -32,6 +83,167 @@ function requiredEnv(name: string): string {
         throw new Error(`Missing required environment variable: ${name}`);
     }
     return value.trim();
+}
+
+function toPersistedRecord(record: ApprovalRecord): PersistedState["approvals"][string] {
+    return {
+        ...record,
+        amount: record.amount.toString(),
+        target: record.target.toString(),
+    };
+}
+
+function fromPersistedRecord(raw: PersistedState["approvals"][string]): ApprovalRecord {
+    return {
+        ...raw,
+        amount: BigInt(raw.amount),
+        target: Address.parse(raw.target),
+    };
+}
+
+function saveState() {
+    const payload: PersistedState = {
+        approvals: Object.fromEntries(
+            Array.from(approvalRecords.entries()).map(([id, record]) => [id, toPersistedRecord(record)])
+        ),
+        seenTransactions: Array.from(seenTransactions),
+    };
+    fs.writeFileSync(APPROVAL_STATE_FILE, JSON.stringify(payload, null, 2), "utf8");
+}
+
+function loadState() {
+    if (!fs.existsSync(APPROVAL_STATE_FILE)) {
+        return;
+    }
+
+    const raw = fs.readFileSync(APPROVAL_STATE_FILE, "utf8").trim();
+    if (!raw) {
+        return;
+    }
+
+    const parsed = JSON.parse(raw) as PersistedState;
+    for (const txHash of parsed.seenTransactions ?? []) {
+        seenTransactions.add(txHash);
+    }
+
+    for (const [id, rawRecord] of Object.entries(parsed.approvals ?? {})) {
+        const record = fromPersistedRecord(rawRecord);
+        approvalRecords.set(id, record);
+        if (record.status === "pending") {
+            pendingApprovals.set(id, {
+                id: record.id,
+                amount: record.amount,
+                target: record.target,
+                txLt: record.txLt,
+                txHashHex: record.txHashHex,
+            });
+        }
+    }
+}
+
+function upsertRecord(record: ApprovalRecord) {
+    approvalRecords.set(record.id, record);
+    saveState();
+}
+
+function setRecordStatus(
+    approvalId: string,
+    status: Exclude<ApprovalStatus, "pending">,
+    resolvedBy: string,
+    extra?: { ownerWallet?: string; submitError?: string }
+) {
+    const existing = approvalRecords.get(approvalId);
+    if (!existing) {
+        return;
+    }
+
+    approvalRecords.set(approvalId, {
+        ...existing,
+        status,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy,
+        ...extra,
+    });
+    saveState();
+}
+
+function readRequestAuditRecords(): RequestAuditRecord[] {
+    if (!fs.existsSync(REQUEST_AUDIT_FILE)) {
+        return [];
+    }
+
+    const raw = fs.readFileSync(REQUEST_AUDIT_FILE, "utf8").trim();
+    if (!raw) {
+        return [];
+    }
+
+    return JSON.parse(raw) as RequestAuditRecord[];
+}
+
+function saveRequestAuditRecords(records: RequestAuditRecord[]) {
+    fs.writeFileSync(REQUEST_AUDIT_FILE, JSON.stringify(records, null, 2), "utf8");
+}
+
+function claimMatchingRequestId(approval: PendingApproval): string | undefined {
+    const records = readRequestAuditRecords();
+    let changed = false;
+
+    for (let i = records.length - 1; i >= 0; i -= 1) {
+        const record = records[i];
+        if (record.consumedByApprovalId) {
+            continue;
+        }
+
+        if (record.contractAddress !== CONTRACT_ADDRESS.toString()) {
+            continue;
+        }
+
+        if (record.targetAddress !== approval.target.toString()) {
+            continue;
+        }
+
+        if (record.amountNano !== approval.amount.toString()) {
+            continue;
+        }
+
+        record.consumedByApprovalId = approval.id;
+        record.status = "approval_pending";
+        record.statusUpdatedAt = new Date().toISOString();
+        changed = true;
+
+        if (changed) {
+            saveRequestAuditRecords(records);
+        }
+        return record.requestId;
+    }
+
+    return undefined;
+}
+
+function updateRequestAuditStatus(
+    requestId: string | undefined,
+    status: Extract<RequestAuditStatus, "approved" | "rejected" | "failed">
+) {
+    if (!requestId) {
+        return;
+    }
+
+    const records = readRequestAuditRecords();
+    let changed = false;
+    for (let i = records.length - 1; i >= 0; i -= 1) {
+        if (records[i].requestId !== requestId) {
+            continue;
+        }
+
+        records[i].status = status;
+        records[i].statusUpdatedAt = new Date().toISOString();
+        changed = true;
+        break;
+    }
+
+    if (changed) {
+        saveRequestAuditRecords(records);
+    }
 }
 
 // Initialize Telegram Bot with your Token from @BotFather
@@ -114,11 +326,22 @@ async function submitOwnerApproval(approval: PendingApproval) {
 }
 
 async function notifyApprovalRequest(approval: PendingApproval) {
-    if (pendingApprovals.has(approval.id)) {
+    const existingRecord = approvalRecords.get(approval.id);
+    if (existingRecord) {
+        if (existingRecord.status === "pending" && !pendingApprovals.has(approval.id)) {
+            pendingApprovals.set(approval.id, approval);
+        }
         return;
     }
 
     pendingApprovals.set(approval.id, approval);
+    const requestId = claimMatchingRequestId(approval);
+    upsertRecord({
+        ...approval,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+        requestId,
+    });
     const keyboard = new InlineKeyboard()
         .text("✅ Approve", `approve:${approval.id}`)
         .text("❌ Reject", `reject:${approval.id}`);
@@ -131,6 +354,7 @@ async function notifyApprovalRequest(approval: PendingApproval) {
             `Amount: *${fromNano(approval.amount)} TON*`,
             `Target: \`${approval.target.toString()}\``,
             `Ref: \`${approval.id}\``,
+            requestId ? `Request ID: \`${requestId}\`` : "",
         ].join("\n"),
         { parse_mode: "MarkdownV2", reply_markup: keyboard }
     );
@@ -140,6 +364,7 @@ function markSeen(transactions: any[]) {
     for (const tx of transactions) {
         seenTransactions.add(tx.hash().toString("hex"));
     }
+    saveState();
 }
 
 function ensureAuthorizedChat(chatId: string) {
@@ -149,13 +374,15 @@ function ensureAuthorizedChat(chatId: string) {
 }
 
 async function bootstrapSeenTransactions(client: TonClient) {
-    const recent = await client.getTransactions(CONTRACT_ADDRESS, { limit: 20, archival: true });
+    const recent = await client.getTransactions(CONTRACT_ADDRESS, { limit: BOOTSTRAP_HISTORY_LIMIT, archival: true });
     markSeen(recent);
 }
 
 async function monitorContract() {
     const client = await getClient();
-    await bootstrapSeenTransactions(client);
+    if (seenTransactions.size === 0 && pendingApprovals.size === 0) {
+        await bootstrapSeenTransactions(client);
+    }
 
     console.log("Monitoring contract for approval requests...");
 
@@ -179,6 +406,12 @@ bot.callbackQuery(/approve:(.+)/, async (ctx) => {
     try {
         ensureAuthorizedChat(String(ctx.chat?.id ?? ""));
         const approvalId = ctx.match[1];
+        const record = approvalRecords.get(approvalId);
+        if (record && record.status !== "pending") {
+            await ctx.answerCallbackQuery(`Request already ${record.status}.`);
+            return;
+        }
+
         const approval = pendingApprovals.get(approvalId);
         if (!approval) {
             await ctx.answerCallbackQuery("Approval request not found or already handled.");
@@ -188,11 +421,22 @@ bot.callbackQuery(/approve:(.+)/, async (ctx) => {
         await ctx.answerCallbackQuery("Processing approval...");
         const ownerWallet = await submitOwnerApproval(approval);
         pendingApprovals.delete(approvalId);
+        const recordRequestId = approvalRecords.get(approvalId)?.requestId;
+        setRecordStatus(approvalId, "approved", String(ctx.from?.id ?? "unknown"), { ownerWallet });
+        updateRequestAuditStatus(recordRequestId, "approved");
 
         await ctx.reply(
             `✅ Approved and submitted by owner wallet ${ownerWallet}. Ref: ${approvalId}`
         );
     } catch (error: any) {
+        const approvalId = ctx.match?.[1];
+        if (approvalId) {
+            const recordRequestId = approvalRecords.get(approvalId)?.requestId;
+            setRecordStatus(approvalId, "failed", String(ctx.from?.id ?? "unknown"), {
+                submitError: error?.message ?? String(error),
+            });
+            updateRequestAuditStatus(recordRequestId, "failed");
+        }
         await ctx.answerCallbackQuery("Approval failed.");
         await ctx.reply(`❌ Failed to approve request: ${error?.message ?? String(error)}`);
     }
@@ -202,7 +446,18 @@ bot.callbackQuery(/reject:(.+)/, async (ctx) => {
     try {
         ensureAuthorizedChat(String(ctx.chat?.id ?? ""));
         const approvalId = ctx.match[1];
+        const record = approvalRecords.get(approvalId);
+        if (record && record.status !== "pending") {
+            await ctx.answerCallbackQuery(`Request already ${record.status}.`);
+            return;
+        }
+
         const removed = pendingApprovals.delete(approvalId);
+        if (removed) {
+            const recordRequestId = approvalRecords.get(approvalId)?.requestId;
+            setRecordStatus(approvalId, "rejected", String(ctx.from?.id ?? "unknown"));
+            updateRequestAuditStatus(recordRequestId, "rejected");
+        }
         await ctx.answerCallbackQuery(removed ? "Request rejected." : "Request already handled.");
         await ctx.reply(`❌ Rejected request ${approvalId}`);
     } catch (error: any) {
@@ -212,6 +467,7 @@ bot.callbackQuery(/reject:(.+)/, async (ctx) => {
 });
 
 async function main() {
+    loadState();
     await bot.start();
     await monitorContract();
     console.log("Telegram approval bot is running...");
