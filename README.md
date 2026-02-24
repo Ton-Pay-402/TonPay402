@@ -43,9 +43,9 @@ TonPay402 is a **policy engine for agent treasuries**, not only a payment gatewa
 - Primary user: operators of AI agents that need both automation and accountability
 - Core promise: programmable spending policies, approval lifecycle, and audit traceability
 
-## Problem 
+## 🚀 Problem 
 
-🚀 The Problem: The "Toddler with a Credit Card" Dilemma
+The "Toddler with a Credit Card" Dilemma
 AI Agents are becoming autonomous economic actors—buying API credits, renting GPU power, or hiring other sub-agents. However, giving an LLM-based agent full access to a seed phrase is an extreme security risk . Current solutions either:
 
 Risk total drainage via prompt injection or logic bugs.
@@ -53,9 +53,8 @@ Risk total drainage via prompt injection or logic bugs.
 Require constant human approval, defeating the purpose of autonomy.
 
 
-## Solution
+## ✅ Solution
 
-✅ The Solution: TonPay 402
 TonPay402 provides a supervised spending stack for agents:
 
 - **On-chain policy contract** for daily budget controls
@@ -65,8 +64,8 @@ TonPay402 provides a supervised spending stack for agents:
 - **Persistent audit state** for production-safe operations
 - **Wallet V5R1 runtime signers** in MCP server (agent) and Telegram bot (owner)
 
-## Architecture
-🏗️ Architecture
+## 🏗️ Architecture
+
 AI Reasoning Layer: The agent identifies a need (e.g., "I need a weather forecast API").
 x402 Challenge: The service provider issues an HTTP 402 challenge (Price, Address, Network).
 SDK Policy Check: The TonPay 402 SDK checks the request against on-chain policies.
@@ -234,7 +233,7 @@ npm run start:bot
 - [x] Core Tact Contract for Policy Management.
 - [x] MCP Server for LLM tool-calling.
 - [x] Wallet V5R1 runtime signer support (MCP agent + Telegram owner).
-- [ ] Integration with AEON/x402 facilitators .
+- [x] Integration with AEON/x402 facilitators .
 - [ ] Multi-agent "Broker" for shared budget envelopes .
 - [ ] Mainnet rollout hardening for Wallet V5 architecture.
 
