@@ -5,6 +5,8 @@
 [![Blueprint Tests](https://img.shields.io/badge/Blueprint-Tests%20Passing-success)](./tests)
 [![MCP](https://img.shields.io/badge/MCP-Server-5A67D8)](./mcp-server)
 
+![TonPay402 Infographic](docs/screenshots/TonPay402-infographic.png)
+
 🤖 TonPay 402: The Universal M2M Payment Rail for TON AI Agents
 TonPay 402 is a specialized infrastructure toolkit designed to enable secure, autonomous, and policy-driven payments for AI agents on the TON Blockchain. By leveraging the Wallet V5 (W5) standard and the x402 (HTTP 402) protocol, it provides the "financial guardrails" necessary for agents to participate in the machine economy without compromising user funds.
 
