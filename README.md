@@ -193,6 +193,55 @@ Fill `.env` values:
 
 > Never commit real mnemonics or bot secrets.
 
+For deployment script (`scripts/deployTonPay402.ts`) also provide:
+
+- `AGENT_ADDRESS` (agent wallet address to be authorized by contract)
+- `DAILY_LIMIT_TON` (optional, default `10`)
+
+## Practical Testnet Smoke Test
+
+1. Build and test locally:
+
+```bash
+npm install
+npx blueprint build
+npx blueprint test
+```
+
+2. Deploy contract to testnet (owner wallet from Blueprint + env agent address):
+
+```bash
+AGENT_ADDRESS="EQ..." DAILY_LIMIT_TON="10" npx blueprint run deployTonPay402 --testnet
+```
+
+3. Put deployed address into `mcp-server/.env` as `CONTRACT_ADDRESS` and set the rest of required values.
+
+4. Start MCP server and Telegram bot (separate terminals):
+
+```bash
+cd mcp-server
+npm run start:mcp
+```
+
+```bash
+cd mcp-server
+npm run start:bot
+```
+
+5. Practical checks:
+   - **Within limit payment**: call `execute_m2m_payment` with a small amount and verify transfer succeeds.
+   - **Over-limit payment**: call `execute_m2m_payment` above daily limit and verify Telegram approval prompt appears.
+   - **Approve path**: tap Approve in Telegram and verify owner-submitted transfer succeeds.
+   - **Reject path**: trigger another over-limit request, tap Reject, and verify status is persisted as rejected.
+   - **Facilitator path** (optional): set `X402_FACILITATOR_URL` and verify returned target/amount overrides are used.
+   - **Broker path**: create envelope, assign agent, execute envelope payment, and confirm budget decreases.
+   - **Broker rollback path**: force on-chain submit failure and confirm envelope budget is rolled back.
+
+6. Verify persisted audit/state artifacts:
+   - `request-audit.json`
+   - `approval-state.json`
+   - `broker-state.json`
+
 ## Running
 
 From `mcp-server/`:
