@@ -8,7 +8,7 @@
 🤖 TonPay 402: The Universal M2M Payment Rail for TON AI Agents
 TonPay 402 is a specialized infrastructure toolkit designed to enable secure, autonomous, and policy-driven payments for AI agents on the TON Blockchain. By leveraging the Wallet V5 (W5) standard and the x402 (HTTP 402) protocol, it provides the "financial guardrails" necessary for agents to participate in the machine economy without compromising user funds.
 
-## ⚡ Unique Differentiators (ویژگی‌های منحصر‌به‌فرد)
+## ⚡ Unique Differentiators 
 
 > **TonPay402 is not just a 402 paywall gateway — it is a treasury policy engine for AI agents.**
 
@@ -213,11 +213,11 @@ npm run start:bot
 - Telegram approval flow: `mcp-server/bot.ts`.
 
 ## 🗺️ Roadmap
-[x] Core Tact Contract for Policy Management.
-[x] MCP Server for LLM tool-calling.
-[ ] Integration with AEON/x402 facilitators .
-[ ] Multi-agent "Broker" for shared budget envelopes .
-[ ] Mainnet Deployment with Wallet V5 integration.
+- [x] Core Tact Contract for Policy Management.
+- [x] MCP Server for LLM tool-calling.
+- [ ] Integration with AEON/x402 facilitators .
+- [ ] Multi-agent "Broker" for shared budget envelopes .
+- [ ] Mainnet Deployment with Wallet V5 integration.
 
 ## License
 
